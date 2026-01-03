@@ -5,12 +5,26 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <string.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <getopt.h>
+
+#define Y_FILE "Y.txt"
+#define MAX_RECORDS 100000
+
+static int enable_display = 0;  /* Disabled by default */
 
 #define NUM_LAYERS 3
 #define NUM_CHILDREN 2
 #define NUM_THREADS 3
+
+/* Record entry for shared memory buffer */
+typedef struct {
+    pid_t pid;
+    pid_t tid;
+} record_t;
 
 #define CLEAR       "\033[2J"
 #define HOME        "\033[H"
@@ -30,7 +44,9 @@ typedef struct {
     int active_process;
     int active_thread;
     int running;
-    pthread_mutex_t mutex;
+    pthread_mutex_t mutex;         /* Single lock for all operations */
+    unsigned long record_idx;      /* Next record index */
+    record_t records[MAX_RECORDS]; /* Buffer of records */
 } shared_data_t;
 
 shared_data_t *shared;
@@ -130,12 +146,28 @@ void *display_thread_func(void *arg) {
 }
 
 void worker_loop(int process_id, int thread_id) {
+    pid_t my_pid = getpid();
+    pid_t my_tid = syscall(SYS_gettid);
+
     while (shared->running && keep_running) {
+        /* Single critical section: update display + record */
         pthread_mutex_lock(&shared->mutex);
+
         shared->active_process = process_id;
         shared->active_thread = thread_id;
+
+        /* Record to shared memory buffer while holding lock */
+        unsigned long idx = shared->record_idx;
+        if (idx < MAX_RECORDS) {
+            shared->records[idx].pid = my_pid;
+            shared->records[idx].tid = my_tid;
+            shared->record_idx++;
+        }
+
         pthread_mutex_unlock(&shared->mutex);
-        usleep(200000 + (rand() % 300000));
+
+        /* Sleep to allow natural context switch - not spinning */
+        usleep(10000);  /* 10ms - gives time for context switch */
     }
 }
 
@@ -188,7 +220,32 @@ void create_process_tree(int current_layer, int process_id) {
     }
 }
 
-int main(void) {
+static void usage(const char *prog) {
+    fprintf(stderr, "Usage: %s [--display]\n", prog);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  --display    Enable visual tree display\n");
+}
+
+int main(int argc, char **argv) {
+    static struct option long_options[] = {
+        {"display", no_argument, NULL, 'd'},
+        {"help",    no_argument, NULL, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "dh", long_options, NULL)) != -1) {
+        switch (opt) {
+        case 'd':
+            enable_display = 1;
+            break;
+        case 'h':
+        default:
+            usage(argv[0]);
+            return (opt == 'h') ? 0 : 1;
+        }
+    }
+
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
@@ -206,18 +263,45 @@ int main(void) {
     shared->active_process = 0;
     shared->active_thread = 0;
     shared->running = 1;
+    shared->record_idx = 0;
 
     pthread_t display_thread;
-    pthread_create(&display_thread, NULL, display_thread_func, NULL);
+    if (enable_display) {
+        pthread_create(&display_thread, NULL, display_thread_func, NULL);
+    }
+
+    printf("Process tree running (display=%s). Press Ctrl+C to stop.\n",
+           enable_display ? "on" : "off");
 
     create_process_tree(0, 0);
 
     shared->running = 0;
-    pthread_join(display_thread, NULL);
-
-    printf(CLEAR HOME);
+    if (enable_display) {
+        pthread_join(display_thread, NULL);
+        printf(CLEAR HOME);
+    }
     printf("Process tree terminated.\n");
 
+    /* Dump records to Y.txt */
+    unsigned long num_records = shared->record_idx;
+    if (num_records > MAX_RECORDS)
+        num_records = MAX_RECORDS;
+
+    printf("Dumping %lu records to %s...\n", num_records, Y_FILE);
+    FILE *yf = fopen(Y_FILE, "w");
+    if (yf) {
+        for (unsigned long i = 0; i < num_records; i++) {
+            fprintf(yf, "%lu %d %d\n", i + 1,
+                    shared->records[i].pid,
+                    shared->records[i].tid);
+        }
+        fclose(yf);
+        printf("Done.\n");
+    } else {
+        perror("Failed to open Y.txt");
+    }
+
+    /* Cleanup */
     pthread_mutex_destroy(&shared->mutex);
     munmap(shared, sizeof(shared_data_t));
 

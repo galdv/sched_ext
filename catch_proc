@@ -1,0 +1,1 @@
+ ps -eo pid,comm,cls --sort=pid | awk '$3 == "#7"'

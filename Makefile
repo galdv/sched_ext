@@ -45,10 +45,10 @@ $(BPF_OBJ): $(BPF_SRC) $(VMLINUX_H) | $(BUILD_DIR)
 	@echo "Compiling BPF scheduler..."
 	$(CLANG) $(BPF_CFLAGS) -I$(BUILD_DIR) -I/usr/include/bpf -c $< -o $@
 
-# Compile userspace scheduler loader
+# Compile userspace scheduler loader (with pthread for dumper thread)
 $(LOADER_BIN): $(LOADER_SRC) $(BPF_OBJ) | $(BUILD_DIR)
 	@echo "Compiling scheduler loader..."
-	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS_BPF)
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS_BPF) $(LDFLAGS_PTHREAD)
 
 # Compile scx_run launcher
 $(RUNNER_BIN): $(RUNNER_SRC) | $(BUILD_DIR)

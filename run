@@ -1,1 +1,2 @@
-./build/scx_run ./build/process_tree
+./build/scx_run taskset -c 1 ./build/process_tree
+cat /sys/kernel/sched_ext/state
